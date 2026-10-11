@@ -1,340 +1,307 @@
--- СЕРВИСЫ
+-- Auto Clicker (меню для телефона)
+-- Старт/Стоп, точка клика двигается стрелками (удержание = непрерывно),
+-- интервал между кликами, перетаскивание и сворачивание меню, полное выключение.
+
 local Players = game:GetService("Players")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-
+local UIS = game:GetService("UserInputService")
+local VIM = game:GetService("VirtualInputManager")
 local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
 
--- СОСТОЯНИЕ
-local isClicking = false
-local clickX = 500
-local clickY = 500
-local clickInterval = 0.1
+-- ===== Состояние =====
+local alive = true
+local running = false
+local interval = 0.10          -- секунды между кликами
+local steps = { 2, 10, 40 }    -- варианты шага стрелок (пиксели)
+local stepIdx = 2
+local useTouch = false         -- false = мышь, true = касание
+local clicks = 0
+local connections = {}
 
--- СОЗДАНИЕ UI
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MobileClickerUI"
-screenGui.ResetOnSpawn = false
-screenGui.Parent = playerGui
+local cam = workspace.CurrentCamera
+local vp = cam and cam.ViewportSize or Vector2.new(800, 400)
+local point = Vector2.new(vp.X / 2, vp.Y / 2)   -- точка клика в экранных координатах
 
-local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 260, 0, 320)
-mainFrame.Position = UDim2.new(0.5, -130, 0.5, -160)
-mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-mainFrame.BorderSizePixel = 0
-mainFrame.Active = true
-mainFrame.Parent = screenGui
+-- ===== GUI =====
+local parent = (gethui and gethui()) or player:WaitForChild("PlayerGui")
+local old = parent:FindFirstChild("AutoClickerGui")
+if old then old:Destroy() end
 
-local corner = Instance.new("UICorner", mainFrame)
-corner.CornerRadius = UDim.new(0, 12)
+local gui = Instance.new("ScreenGui")
+gui.Name = "AutoClickerGui"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true      -- координаты GUI = реальные координаты экрана
+gui.DisplayOrder = 999
+gui.Parent = parent
 
--- ЗАГОЛОВОК И КНОПКА СВОРАЧИВАНИЯ
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -60, 0, 40)
-title.Position = UDim2.new(0, 0, 0, 0)
-title.BackgroundTransparency = 1
-title.Text = "Кликер"
-title.TextColor3 = Color3.fromRGB(255, 255, 255)
-title.TextScaled = true
-title.Font = Enum.Font.GothamBold
-title.Parent = mainFrame
+local function mk(class, props, par)
+	local o = Instance.new(class)
+	for k, v in pairs(props) do o[k] = v end
+	o.Parent = par
+	return o
+end
+local function round(o, r) Instance.new("UICorner", o).CornerRadius = UDim.new(0, r or 6) end
 
-local minimizeBtn = Instance.new("TextButton")
-minimizeBtn.Size = UDim2.new(0, 35, 0, 35)
-minimizeBtn.Position = UDim2.new(1, -40, 0, 5)
-minimizeBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 100)
-minimizeBtn.Text = "—"
-minimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-minimizeBtn.TextScaled = true
-minimizeBtn.Font = Enum.Font.GothamBold
-minimizeBtn.Parent = mainFrame
+-- метка точки клика (не перехватывает нажатия)
+local marker = mk("Frame", {
+	Size = UDim2.fromOffset(26, 26), BackgroundTransparency = 1, Active = false,
+}, gui)
+local ring = mk("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Active = false }, marker)
+round(ring, 13)
+local stroke = Instance.new("UIStroke")
+stroke.Thickness = 2
+stroke.Color = Color3.fromRGB(255, 80, 80)
+stroke.Parent = ring
+local dot = mk("Frame", {
+	Size = UDim2.fromOffset(4, 4), Position = UDim2.new(0.5, -2, 0.5, -2),
+	BackgroundColor3 = Color3.fromRGB(255, 80, 80), BorderSizePixel = 0, Active = false,
+}, marker)
+round(dot, 2)
 
-local minimizeCorner = Instance.new("UICorner", minimizeBtn)
-minimizeCorner.CornerRadius = UDim.new(0, 8)
-
--- КНОПКА ПОЛНОГО ЗАКРЫТИЯ
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 35, 0, 35)
-closeBtn.Position = UDim2.new(1, -80, 0, 5)
-closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-closeBtn.Text = "X"
-closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeBtn.TextScaled = true
-closeBtn.Font = Enum.Font.GothamBold
-closeBtn.Parent = mainFrame
-
-local closeCorner = Instance.new("UICorner", closeBtn)
-closeCorner.CornerRadius = UDim.new(0, 8)
-
--- КОНТЕЙНЕР ДЛЯ ЭЛЕМЕНТОВ (скрывается при сворачивании)
-local content = Instance.new("Frame")
-content.Size = UDim2.new(1, 0, 1, -50)
-content.Position = UDim2.new(0, 0, 0, 50)
-content.BackgroundTransparency = 1
-content.Parent = mainFrame
-
--- СТРЕЛКИ ДЛЯ ВЫБОРА ТОЧКИ КЛИКА
-local arrowSize = UDim2.new(0, 40, 0, 40)
-
-local upArrow = Instance.new("TextButton")
-upArrow.Size = arrowSize
-upArrow.Position = UDim2.new(0.5, -20, 0, 0)
-upArrow.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-upArrow.Text = "▲"
-upArrow.TextColor3 = Color3.fromRGB(255, 255, 255)
-upArrow.TextScaled = true
-upArrow.Parent = content
-local upCorner = Instance.new("UICorner", upArrow)
-upCorner.CornerRadius = UDim.new(0, 8)
-
-local downArrow = Instance.new("TextButton")
-downArrow.Size = arrowSize
-downArrow.Position = UDim2.new(0.5, -20, 0, 80)
-downArrow.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-downArrow.Text = "▼"
-downArrow.TextColor3 = Color3.fromRGB(255, 255, 255)
-downArrow.TextScaled = true
-downArrow.Parent = content
-local downCorner = Instance.new("UICorner", downArrow)
-downCorner.CornerRadius = UDim.new(0, 8)
-
-local leftArrow = Instance.new("TextButton")
-leftArrow.Size = arrowSize
-leftArrow.Position = UDim2.new(0, 10, 0, 40)
-leftArrow.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-leftArrow.Text = "◀"
-leftArrow.TextColor3 = Color3.fromRGB(255, 255, 255)
-leftArrow.TextScaled = true
-leftArrow.Parent = content
-local leftCorner = Instance.new("UICorner", leftArrow)
-leftCorner.CornerRadius = UDim.new(0, 8)
-
-local rightArrow = Instance.new("TextButton")
-rightArrow.Size = arrowSize
-rightArrow.Position = UDim2.new(1, -50, 0, 40)
-rightArrow.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-rightArrow.Text = "▶"
-rightArrow.TextColor3 = Color3.fromRGB(255, 255, 255)
-rightArrow.TextScaled = true
-rightArrow.Parent = content
-local rightCorner = Instance.new("UICorner", rightArrow)
-rightCorner.CornerRadius = UDim.new(0, 8)
-
--- ОТОБРАЖЕНИЕ КООРДИНАТ
-local coordsLabel = Instance.new("TextLabel")
-coordsLabel.Size = UDim2.new(1, 0, 0, 30)
-coordsLabel.Position = UDim2.new(0, 0, 0, 45)
-coordsLabel.BackgroundTransparency = 1
-coordsLabel.Text = "X: 500  Y: 500"
-coordsLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-coordsLabel.TextScaled = true
-coordsLabel.Font = Enum.Font.Gotham
-coordsLabel.Parent = content
-
--- СЛАЙДЕР ДЛЯ ИНТЕРВАЛА
-local intervalLabel = Instance.new("TextLabel")
-intervalLabel.Size = UDim2.new(1, 0, 0, 25)
-intervalLabel.Position = UDim2.new(0, 0, 0, 130)
-intervalLabel.BackgroundTransparency = 1
-intervalLabel.Text = "Интервал: 0.1 сек"
-intervalLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-intervalLabel.TextScaled = true
-intervalLabel.Font = Enum.Font.Gotham
-intervalLabel.Parent = content
-
-local intervalBack = Instance.new("Frame")
-intervalBack.Size = UDim2.new(0.8, 0, 0, 30)
-intervalBack.Position = UDim2.new(0.1, 0, 0, 160)
-intervalBack.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-intervalBack.Parent = content
-local intervalCorner = Instance.new("UICorner", intervalBack)
-intervalCorner.CornerRadius = UDim.new(0, 6)
-
-local intervalFill = Instance.new("Frame")
-intervalFill.Size = UDim2.new(0.1, 0, 1, 0)
-intervalFill.BackgroundColor3 = Color3.fromRGB(80, 150, 255)
-intervalFill.Parent = intervalBack
-local fillCorner = Instance.new("UICorner", intervalFill)
-fillCorner.CornerRadius = UDim.new(0, 6)
-
--- КНОПКИ СТАРТ/СТОП
-local startBtn = Instance.new("TextButton")
-startBtn.Size = UDim2.new(0.45, 0, 0, 45)
-startBtn.Position = UDim2.new(0.03, 0, 1, -55)
-startBtn.BackgroundColor3 = Color3.fromRGB(50, 180, 50)
-startBtn.Text = "СТАРТ"
-startBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-startBtn.TextScaled = true
-startBtn.Font = Enum.Font.GothamBold
-startBtn.Parent = content
-local startCorner = Instance.new("UICorner", startBtn)
-startCorner.CornerRadius = UDim.new(0, 8)
-
-local stopBtn = Instance.new("TextButton")
-stopBtn.Size = UDim2.new(0.45, 0, 0, 45)
-stopBtn.Position = UDim2.new(0.52, 0, 1, -55)
-stopBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-stopBtn.Text = "СТОП"
-stopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-stopBtn.TextScaled = true
-stopBtn.Font = Enum.Font.GothamBold
-stopBtn.Parent = content
-local stopCorner = Instance.new("UICorner", stopBtn)
-stopCorner.CornerRadius = UDim.new(0, 8)
-
--- ФУНКЦИЯ КЛИКА
-local function performClick()
-    if not isClicking then return end
-    VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, true, game, 0)
-    task.wait(0.01)
-    VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, false, game, 0)
+local function placeMarker()
+	local v = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or vp
+	point = Vector2.new(math.clamp(point.X, 0, v.X), math.clamp(point.Y, 0, v.Y))
+	marker.Position = UDim2.fromOffset(point.X - 13, point.Y - 13)
 end
 
--- ЦИКЛ КЛИКОВ
-local clickConnection
-local function startClicking()
-    isClicking = true
-    startBtn.BackgroundColor3 = Color3.fromRGB(30, 100, 30)
-    stopBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-    
-    clickConnection = RunService.Heartbeat:Connect(function()
-        if isClicking then
-            task.spawn(performClick)
-            task.wait(clickInterval)
-        end
-    end)
+-- меню
+local main = mk("Frame", {
+	Size = UDim2.new(0, 230, 0, 242), Position = UDim2.new(0, 10, 0, 40),
+	BackgroundColor3 = Color3.fromRGB(28, 28, 36), BorderSizePixel = 0, ClipsDescendants = true,
+}, gui)
+round(main, 8)
+
+local bar = mk("Frame", { Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = Color3.fromRGB(40, 40, 52), BorderSizePixel = 0 }, main)
+local title = mk("TextLabel", {
+	Size = UDim2.new(1, -34, 1, 0), Position = UDim2.new(0, 8, 0, 0), BackgroundTransparency = 1,
+	Text = "Auto Clicker", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold,
+	TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left,
+}, bar)
+local minBtn = mk("TextButton", {
+	Size = UDim2.new(0, 28, 0, 24), Position = UDim2.new(1, -28, 0, 0), BackgroundTransparency = 1,
+	Text = "–", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 16,
+}, bar)
+
+local body = mk("Frame", { Size = UDim2.new(1, 0, 1, -24), Position = UDim2.new(0, 0, 0, 24), BackgroundTransparency = 1 }, main)
+
+local function btn(text, x, y, w, h, color, size)
+	local b = mk("TextButton", {
+		Size = UDim2.fromOffset(w, h), Position = UDim2.fromOffset(x, y), BackgroundColor3 = color,
+		Text = text, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = size or 13,
+		AutoButtonColor = true,
+	}, body)
+	round(b, 6)
+	return b
 end
 
-local function stopClicking()
-    isClicking = false
-    startBtn.BackgroundColor3 = Color3.fromRGB(50, 180, 50)
-    stopBtn.BackgroundColor3 = Color3.fromRGB(150, 30, 30)
-    
-    if clickConnection then
-        clickConnection:Disconnect()
-        clickConnection = nil
-    end
+local GREEN, RED = Color3.fromRGB(50, 150, 90), Color3.fromRGB(190, 70, 70)
+local DARK = Color3.fromRGB(60, 60, 78)
+
+-- Старт / Стоп
+local startBtn = btn("СТАРТ", 6, 6, 218, 34, GREEN, 15)
+
+-- Стрелки (крестовина)
+local upBtn    = btn("▲", 46, 46, 40, 30, DARK, 14)
+local leftBtn  = btn("◀", 4 + 2, 80, 40, 30, DARK, 14)
+local downBtn  = btn("▼", 46, 80, 40, 30, DARK, 14)
+local rightBtn = btn("▶", 86, 80, 40, 30, DARK, 14)
+leftBtn.Position = UDim2.fromOffset(6, 80)
+
+-- Справа от стрелок: координаты, шаг, центр
+local coordLabel = mk("TextLabel", {
+	Size = UDim2.fromOffset(92, 30), Position = UDim2.fromOffset(132, 46), BackgroundColor3 = Color3.fromRGB(18, 18, 24),
+	TextColor3 = Color3.fromRGB(140, 255, 160), Font = Enum.Font.Code, TextSize = 11, Text = "",
+}, body)
+round(coordLabel, 5)
+local stepBtn = btn("Шаг: 10", 132, 80, 44, 30, DARK, 10)
+local centerBtn = btn("Центр", 180, 80, 44, 30, DARK, 10)
+
+-- Интервал
+mk("TextLabel", {
+	Size = UDim2.fromOffset(60, 28), Position = UDim2.fromOffset(6, 118), BackgroundTransparency = 1,
+	Text = "Интервал, с:", TextColor3 = Color3.fromRGB(190, 190, 205), Font = Enum.Font.Gotham,
+	TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left,
+}, body)
+local minusBtn = btn("−", 78, 118, 34, 28, DARK, 16)
+local intervalBox = mk("TextBox", {
+	Size = UDim2.fromOffset(62, 28), Position = UDim2.fromOffset(116, 118),
+	BackgroundColor3 = Color3.fromRGB(18, 18, 24), TextColor3 = Color3.new(1, 1, 1),
+	Text = "0.10", Font = Enum.Font.Code, TextSize = 13, ClearTextOnFocus = false,
+}, body)
+round(intervalBox, 5)
+local plusBtn = btn("+", 182, 118, 34, 28, DARK, 16)
+
+-- Режим и счётчик
+local modeBtn = btn("Режим: Мышь", 6, 152, 108, 26, DARK, 11)
+local countLabel = mk("TextLabel", {
+	Size = UDim2.fromOffset(104, 26), Position = UDim2.fromOffset(120, 152), BackgroundColor3 = Color3.fromRGB(18, 18, 24),
+	TextColor3 = Color3.fromRGB(230, 230, 240), Font = Enum.Font.Code, TextSize = 11, Text = "Кликов: 0",
+}, body)
+round(countLabel, 5)
+
+-- Полное выключение
+local offBtn = btn("ВЫКЛЮЧИТЬ СКРИПТ", 6, 184, 218, 28, RED, 12)
+
+-- ===== Перетаскивание меню =====
+do
+	local dragging, startPos, startInput
+	bar.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging, startPos, startInput = true, main.Position, i.Position
+			i.Changed:Connect(function()
+				if i.UserInputState == Enum.UserInputState.End then dragging = false end
+			end)
+		end
+	end)
+	table.insert(connections, UIS.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseMovement) then
+			local d = i.Position - startInput
+			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end))
 end
 
--- ОБРАБОТЧИКИ КНОПОК
-startBtn.MouseButton1Click:Connect(function()
-    if not isClicking then
-        startClicking()
-    end
-end)
-
-stopBtn.MouseButton1Click:Connect(function()
-    stopClicking()
-end)
-
--- СТРЕЛКИ
-upArrow.MouseButton1Click:Connect(function()
-    clickY = math.max(0, clickY - 10)
-    coordsLabel.Text = "X: " .. clickX .. "  Y: " .. clickY
-end)
-
-downArrow.MouseButton1Click:Connect(function()
-    clickY = clickY + 10
-    coordsLabel.Text = "X: " .. clickX .. "  Y: " .. clickY
-end)
-
-leftArrow.MouseButton1Click:Connect(function()
-    clickX = math.max(0, clickX - 10)
-    coordsLabel.Text = "X: " .. clickX .. "  Y: " .. clickY
-end)
-
-rightArrow.MouseButton1Click:Connect(function()
-    clickX = clickX + 10
-    coordsLabel.Text = "X: " .. clickX .. "  Y: " .. clickY
-end)
-
--- СЛАЙДЕР (перетаскивание)
-local draggingSlider = false
-
-local function updateSlider(input)
-    local relX = input.Position.X - intervalBack.AbsolutePosition.X
-    local percent = math.clamp(relX / intervalBack.AbsoluteSize.X, 0, 1)
-    intervalFill.Size = UDim2.new(percent, 0, 1, 0)
-    clickInterval = 0.01 + (percent * 0.99)
-    intervalLabel.Text = string.format("Интервал: %.2f сек", clickInterval)
+-- ===== Логика =====
+local function updateCoords()
+	coordLabel.Text = string.format("X:%d  Y:%d", point.X, point.Y)
+	placeMarker()
 end
 
-intervalBack.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        draggingSlider = true
-        updateSlider(input)
-    end
+local function movePoint(dx, dy)
+	point = point + Vector2.new(dx, dy) * steps[stepIdx]
+	updateCoords()
+end
+
+-- стрелка: тап = 1 шаг, удержание = непрерывное движение
+local function bindArrow(b, dx, dy)
+	local active
+	b.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+			local mine = {}
+			active = mine
+			movePoint(dx, dy)
+			task.spawn(function()
+				task.wait(0.35)
+				while alive and active == mine do
+					movePoint(dx, dy)
+					task.wait(0.04)
+				end
+			end)
+			i.Changed:Connect(function()
+				if i.UserInputState == Enum.UserInputState.End and active == mine then active = nil end
+			end)
+		end
+	end)
+	b.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+			active = nil
+		end
+	end)
+end
+bindArrow(upBtn, 0, -1)
+bindArrow(downBtn, 0, 1)
+bindArrow(leftBtn, -1, 0)
+bindArrow(rightBtn, 1, 0)
+
+stepBtn.Activated:Connect(function()
+	stepIdx = stepIdx % #steps + 1
+	stepBtn.Text = "Шаг: " .. steps[stepIdx]
 end)
 
-UserInputService.InputChanged:Connect(function(input)
-    if draggingSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        updateSlider(input)
-    end
+centerBtn.Activated:Connect(function()
+	local v = workspace.CurrentCamera.ViewportSize
+	point = Vector2.new(v.X / 2, v.Y / 2)
+	updateCoords()
 end)
 
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        draggingSlider = false
-    end
+-- интервал
+local function setInterval(v)
+	interval = math.clamp(math.floor(v * 100 + 0.5) / 100, 0.01, 60)
+	intervalBox.Text = string.format("%.2f", interval)
+end
+minusBtn.Activated:Connect(function() setInterval(interval - 0.05) end)
+plusBtn.Activated:Connect(function() setInterval(interval + 0.05) end)
+intervalBox.FocusLost:Connect(function()
+	local v = tonumber((intervalBox.Text:gsub(",", ".")))
+	setInterval(v or interval)
 end)
 
--- ПЕРЕТАСКИВАНИЕ МЕНЮ
-local draggingUI = false
-local dragStart
-local startPos
-
-mainFrame.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        draggingUI = true
-        dragStart = input.Position
-        startPos = mainFrame.Position
-    end
+modeBtn.Activated:Connect(function()
+	useTouch = not useTouch
+	modeBtn.Text = "Режим: " .. (useTouch and "Тач" or "Мышь")
 end)
 
-UserInputService.InputChanged:Connect(function(input)
-    if draggingUI and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
-        mainFrame.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + delta.X,
-            startPos.Y.Scale, startPos.Y.Offset + delta.Y
-        )
-    end
-end)
+-- сам клик
+local function clickAt(x, y)
+	if useTouch then
+		pcall(function()
+			VIM:SendTouchEvent(1, 0, x, y)
+			VIM:SendTouchEvent(1, 2, x, y)
+		end)
+	else
+		pcall(function()
+			VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
+			VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
+		end)
+	end
+end
 
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        draggingUI = false
-    end
-end)
+-- метка под самим меню? тогда клик попадёт в меню, пропускаем
+local function pointUnderMenu()
+	if not body.Visible and main.AbsoluteSize.Y <= 24 then
+		local p, s = main.AbsolutePosition, main.AbsoluteSize
+		return point.X >= p.X and point.X <= p.X + s.X and point.Y >= p.Y and point.Y <= p.Y + s.Y
+	end
+	local p, s = main.AbsolutePosition, main.AbsoluteSize
+	return point.X >= p.X and point.X <= p.X + s.X and point.Y >= p.Y and point.Y <= p.Y + s.Y
+end
 
--- СВОРАЧИВАНИЕ
+local function setRunning(v)
+	running = v
+	startBtn.Text = v and "СТОП" or "СТАРТ"
+	startBtn.BackgroundColor3 = v and RED or GREEN
+	local c = v and Color3.fromRGB(80, 255, 120) or Color3.fromRGB(255, 80, 80)
+	stroke.Color, dot.BackgroundColor3 = c, c
+	if v then
+		task.spawn(function()
+			while alive and running do
+				if pointUnderMenu() then
+					title.Text = "Метка под меню!"
+				else
+					title.Text = "Auto Clicker"
+					clickAt(point.X, point.Y)
+					clicks += 1
+					countLabel.Text = "Кликов: " .. clicks
+				end
+				task.wait(interval)
+			end
+		end)
+	else
+		title.Text = "Auto Clicker"
+	end
+end
+
+startBtn.Activated:Connect(function() setRunning(not running) end)
+
+-- сворачивание
 local minimized = false
-local originalSize = mainFrame.Size
-
-minimizeBtn.MouseButton1Click:Connect(function()
-    minimized = not minimized
-    if minimized then
-        content.Visible = false
-        mainFrame.Size = UDim2.new(0, 260, 0, 45)
-        minimizeBtn.Text = "+"
-    else
-        content.Visible = true
-        mainFrame.Size = originalSize
-        minimizeBtn.Text = "—"
-    end
+minBtn.Activated:Connect(function()
+	minimized = not minimized
+	body.Visible = not minimized
+	main.Size = minimized and UDim2.new(0, 230, 0, 24) or UDim2.new(0, 230, 0, 242)
+	minBtn.Text = minimized and "+" or "–"
 end)
 
--- ПОЛНОЕ ВЫКЛЮЧЕНИЕ
-closeBtn.MouseButton1Click:Connect(function()
-    stopClicking()
-    screenGui:Destroy()
+-- полное выключение
+offBtn.Activated:Connect(function()
+	alive = false
+	running = false
+	for _, c in ipairs(connections) do pcall(function() c:Disconnect() end) end
+	gui:Destroy()
 end)
 
--- АВТООСТАНОВКА ПРИ ВЫКЛЮЧЕНИИ
-RunService.Heartbeat:Connect(function()
-    if not screenGui.Parent then
-        stopClicking()
-    end
-end)
+-- пересчёт метки при смене размера экрана
+if workspace.CurrentCamera then
+	table.insert(connections, workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(placeMarker))
+end
+
+updateCoords()
